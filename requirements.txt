@@ -2,3 +2,4 @@ matplotlib
 networkx
 pandas
 z3
+z3-solver
