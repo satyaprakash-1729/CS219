@@ -70,12 +70,13 @@ class Utils:
         rule_list = []
         rule_number = 0
         edge_list = {}
-
+        cidr_list = {}
         print("Creating Routers....")
         for i in range(len(df)):
             rid = int(df.iloc[i, 0])
             cidr = df.iloc[i, 1]
             fid = int(df.iloc[i, 2])
+            cidr_list[(rid, fid)] = cidr
             prefix = Utils.get_prefix_with_mask(cidr)
             if rid not in router_list:
                 router_list[rid] = Router(rid)
@@ -106,19 +107,16 @@ class Utils:
             label_nodes = {}
             for k, _ in router_list.items():
                 label_nodes[k] = k
-            labels = {}
             edges = []
             for src in edge_list.keys():
                 for dst in edge_list[src]:
                     graph.add_edge(src, dst[0])
                     edges.append((src, dst[0]))
-                    labels[(src, dst[0])] = dst[1]
             pos = nx.spring_layout(graph)
             nx.draw_networkx_nodes(graph, pos, router_list.keys())
             nx.draw_networkx_edges(graph, pos, edges, arrowstyle="->", arrowsize=10, width=2)
-            nx.draw_networkx_edge_labels(graph, pos, labels)
+            nx.draw_networkx_edge_labels(graph, pos, cidr_list)
             nx.draw_networkx_labels(graph, pos, label_nodes)
-            # nx.draw(graph, pos, with_labels=True)
             plt.show()
 
         return router_list, rule_list
