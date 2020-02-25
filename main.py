@@ -178,6 +178,8 @@ class AntEater:
         final_rule = dp[s][1]
         for i in range(2, k+1):
             final_rule = Or(final_rule, dp[s][i])
+        final_rule = And(final_rule, Int('x') > 0)
+        final_rule = And(final_rule, Int('x') < 2 ** 32)
         return final_rule
 
     def loop_detection(self):
@@ -197,6 +199,28 @@ class AntEater:
             del self.router_list[new_router_id]
             for added in added_list:
                 added.pop()
+        final_rule = And(final_rule, Int('x') > 0)
+        final_rule = And(final_rule, Int('x') < 2 ** 32)
+        return final_rule
+
+    def packet_loss(self, vertex, destinations):
+        routers = self.router_list.keys()
+        num_routers = len(routers)
+        max_router_id = max(routers)
+        new_router_id = max_router_id + 1
+        self.router_list[new_router_id] = Router(new_router_id)
+        for rid in destinations:
+            router = self.router_list[rid]
+            if router.policies is not None:
+                router.policies.append((True, new_router_id))
+            else:
+                router.policies = [(True, new_router_id)]
+        final_rule = Not(self.check_reachability(vertex, new_router_id, num_routers))
+        del self.router_list[new_router_id]
+        for rid in destinations:
+            self.router_list[rid].policies.pop()
+        final_rule = And(final_rule, Int('x') > 0)
+        final_rule = And(final_rule, Int('x') < 2**32)
         return final_rule
 
 
@@ -218,7 +242,7 @@ class TestSuite:
         if solver.check().r != -1:
             m = solver.model()
             for var in m.decls():
-                print(">>>> " + var.name() + ": ", Utils.convert_int_to_ip(m[var].as_long()))
+                print(">>>> IP: ", Utils.convert_int_to_ip(m[var].as_long()))
         else:
             print("No Solution...")
 
@@ -233,15 +257,36 @@ class TestSuite:
             print("Loop found!...")
             m = solver.model()
             for var in m.decls():
-                print(">>>> " + var.name() + ": ", Utils.convert_int_to_ip(m[var].as_long()))
+                print(">>>> IP: ", Utils.convert_int_to_ip(m[var].as_long()))
             return
         print("No Loops Found !")
+
+    @staticmethod
+    def test_packet_loss(anteater):
+        print("Enter Source Router ID: ")
+        src = int(input())
+        print("Enter Destination Set Router IDs (separated by spaces):")
+        dst = list(map(int, input().strip().split()))
+        if src in dst:
+            raise ValueError("Invalid input. Source exists in destination set.")
+        expr = anteater.packet_loss(src, dst)
+        print("\n\nThe final SAT Expression for Packet Loss: ", expr)
+        print("\n-------------------------------\n")
+        solver = Solver()
+        solver.add(expr)
+        if solver.check().r != -1:
+            print("Packet Loss Detected!...\nFollowing header is for one of the lost packets->")
+            m = solver.model()
+            for var in m.decls():
+                print(">>>> IP: ", Utils.convert_int_to_ip(m[var].as_long()))
+            return
+        print("No Packet Loss!")
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-f', '--router_file', help="Router List File", action='store')
-    parser.add_argument('-t', '--test_id', help="1: reachability 2: loop", action='store')
+    parser.add_argument('-f', '--router_file', help="Router List File", action='store', required=True)
+    parser.add_argument('-t', '--test_id', help="1: reachability 2: loop 3: packet loss", action='store', required=True)
     parser.add_argument('-n', '--draw_network', help="Network display toggle", action='store_true')
     args = parser.parse_args()
     print("Reading network flow file . . .")
@@ -257,8 +302,11 @@ def main():
     elif int(args.test_id) == 2:
         print("\n\nLoops Test . . . .")
         TestSuite.test_loops(anteater)
+    elif int(args.test_id) == 3:
+        print("\n\nPacket Loss Test . . . .")
+        TestSuite.test_packet_loss(anteater)
     else:
-        print("Please choose a correct Test ID\n1 --> Reachability\n2 --> Loop Detection")
+        print("Please choose a correct Test ID\n1 --> Reachability\n2 --> Loop Detection\n3 --> Packet Loss Detection")
 
 
 if __name__ == "__main__":
