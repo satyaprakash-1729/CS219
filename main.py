@@ -101,7 +101,7 @@ class Utils:
 
         if verbose:
             print(">>> Number of routers: ", len(router_list.keys()))
-            graph = nx.Graph()
+            graph = nx.DiGraph()
 
             graph.add_nodes_from(router_list.keys())
             label_nodes = {}
@@ -110,12 +110,12 @@ class Utils:
             edges = []
             for src in edge_list.keys():
                 for dst in edge_list[src]:
-                    graph.add_edge(src, dst[0])
+                    graph.add_edge(src, dst[0], length=10)
                     edges.append((src, dst[0]))
             pos = nx.spring_layout(graph)
             nx.draw_networkx_nodes(graph, pos, router_list.keys())
-            nx.draw_networkx_edges(graph, pos, edges, arrowstyle="->", arrowsize=10, width=2)
-            nx.draw_networkx_edge_labels(graph, pos, cidr_list)
+            nx.draw_networkx_edges(graph, pos, edges, arrowstyle="->", arrowsize=20, width=2)
+            nx.draw_networkx_edge_labels(graph, pos, cidr_list, font_size=7, alpha=0.7)
             nx.draw_networkx_labels(graph, pos, label_nodes)
             plt.show()
 
