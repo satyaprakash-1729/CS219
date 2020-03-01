@@ -94,8 +94,8 @@ class Utils:
             rule_list.append(Rule(rule_number, prefix, fid))
             rule_number += 1
 
-        print("Parsing ACL Rules...")
-        for i in range(len(df_acl)):
+        # print("Parsing ACL Rules...")
+        # for i in range(len(df_acl)):
 
 
         for rid, rule in router_temp_list.items():
@@ -292,7 +292,7 @@ class TestSuite:
 def main():
     argparser = argparse.ArgumentParser()
     argparser.add_argument('-f', '--router_file', help="Router List File", action='store', required=True)
-    argparser.add_argument('-f', '--acl_file', help="ACL Rule File", action='store', required=True)
+    argparser.add_argument('-a', '--acl_file', help="ACL Rule File", action='store', required=True)
     argparser.add_argument('-t', '--test_id', help="1: reachability 2: loop 3: packet loss", action='store', required=True)
     argparser.add_argument('-n', '--draw_network', help="Network display toggle", action='store_true')
     args = argparser.parse_args()
