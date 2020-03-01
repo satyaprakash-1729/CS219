@@ -3,3 +3,5 @@ networkx
 pandas
 z3
 z3-solver
+tqdm
+numpy

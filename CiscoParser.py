@@ -1,0 +1,787 @@
+import re
+from math import pow
+
+
+def is_ip_address(str):
+    ips = re.match('(?:[\d]{1,3})\.(?:[\d]{1,3})\.(?:[\d]{1,3})\.(?:[\d]{1,3})', str)
+    if ips == None:
+        return False
+    else:
+        return True
+
+
+def is_ip_subnet(str):
+    ips = re.match('(?:[\d]{1,3})\.(?:[\d]{1,3})\.(?:[\d]{1,3})\.(?:[\d]{1,3})/(?:[\d]{1,2})', str)
+    if ips == None:
+        return False
+    else:
+        return True
+
+
+def int_to_dotted_ip(intip):
+    octet = ''
+    for exp in [3, 2, 1, 0]:
+        octet = octet + str(intip / (256 ** exp)) + "."
+        intip = intip % (256 ** exp)
+    return (octet.rstrip('.'))
+
+
+def dotted_ip_to_int(dotted_ip):
+    exp = 3
+    intip = 0
+    for quad in dotted_ip.split('.'):
+        intip = intip + (int(quad) * (256 ** exp))
+        exp = exp - 1
+    return (intip)
+
+
+def dotted_subnet_to_int(dotted_subnet):
+    exp = 3
+    intip = 0
+    subnet = 32
+    parts = dotted_subnet.split('/')
+    if len(parts) > 1:
+        try:
+            subnet = int(parts[1])
+        except Exception:
+            pass
+    dotted_ip = parts[0]
+    for quad in dotted_ip.split('.'):
+        intip = intip + (int(quad) * (256 ** exp))
+        exp = exp - 1
+    return ([intip, subnet])
+
+
+def mac_to_int(mac):
+    return int(mac.replace(':', ''), 16)
+
+
+def l2_proto_to_int(proto):
+    if proto == "ip":
+        return 0x0800
+    elif proto == "arp":
+        return 0x0806
+    elif proto == "mpls":
+        return 0x8847
+
+
+def range_to_wildcard(r_s, r_e, length):
+    vals = r_s
+    vale = r_e
+    match = []
+    while (vals <= vale):
+        for i in range(1, length + 2):
+            if not ((vals | (2 ** i - 1)) <= vale and (vals % 2 ** i) == 0):
+                match.append((vals, i - 1))
+                vals = (vals | (2 ** (i - 1) - 1)) + 1
+                break
+    return match
+
+
+def find_num_mask_bits_right_mak(mask):
+    count = 0
+    while (True):
+        if (mask & 1 == 1):
+            mask = mask >> 1
+            count += 1
+        else:
+            break
+    return count
+
+
+def find_num_mask_bits_left_mak(mask):
+    count = 0
+    while (True):
+        if (mask & 1 == 0):
+            mask = mask >> 1
+            count += 1
+        else:
+            break
+    return 32 - count
+
+
+class node(object):
+    def __init__(self):
+        self.zero = None;
+        self.one = None;
+        self.ips = []
+        self.action = None;
+
+    def printSelf(self, indent):
+        ind = ""
+        for i in range(indent):
+            ind = ind + "\t";
+        str_ip = "%sIPs: " % ind
+        for i in self.ips:
+            str_ip = str_ip + int_to_dotted_ip(i[0]) + "/%d" % i[1] + ", "
+        str_ip
+        "%sAction: %s" % (ind, self.action)
+        if self.zero != None:
+            "%sZero:" % (ind)
+            self.zero.printSelf(indent + 1)
+        if self.one != None:
+            "%sOne:" % (ind)
+            self.one.printSelf(indent + 1)
+
+    def is_leaf(self):
+        return (self.zero == None and self.one == None)
+
+    def optimize(self, action):
+        propagate_action = action
+        if (self.action != None):
+            propagate_action = self.action
+
+        if (self.zero != None):
+            self.zero.optimize(propagate_action)
+            if (self.zero.action == propagate_action and self.zero.action != None):
+                self.ips.extend(self.zero.ips)
+                self.action = propagate_action
+                self.zero.ips = []
+                self.zero.action = None
+                if self.zero.is_leaf():
+                    self.zero = None
+        if (self.one != None):
+            self.one.optimize(propagate_action)
+            if (self.one.action == propagate_action and self.one.action != None):
+                self.ips.extend(self.one.ips)
+                self.action = propagate_action
+                self.one.ips = []
+                self.one.action = None
+                if self.one.is_leaf():
+                    self.one = None
+        if (self.zero != None and self.one != None and \
+                self.zero.action == self.one.action and self.zero.action != None):
+            self.action = self.zero.action
+            self.ips.extend(self.zero.ips)
+            self.ips.extend(self.one.ips)
+            self.zero.ips = []
+            self.zero.action = None
+            self.one.ips = []
+            self.one.action = None
+            if self.zero.is_leaf():
+                self.zero = None
+            if self.one.is_leaf():
+                self.one = None
+
+    def output_compressed(self, power, cip, result):
+        if (self.zero != None):
+            self.zero.output_compressed(power - 1, cip, result)
+        if (self.one != None):
+            self.one.output_compressed(power - 1, int(cip + pow(2, power - 1)), result)
+        if len(self.ips) > 0:
+            result.append((cip, 32 - power, self.action, self.ips))
+
+
+def compress_ip_list(ip_list):
+    '''
+    ip_list is a list of ip address, subnet, next_hop,... of type
+    (int,int,string,...)
+    this function compresses the list, and returns a list of
+    (int ip address,int subnet,next_hop,[ip_list_elem]) where list of
+    ip_list_elem shows which input ipl_list elem is compressed to create the
+    output entry and next_hop is a string indicating the next hop.
+    '''
+    root = node()
+    # create the tri
+    for elem in ip_list:
+        cur = root
+        for i in range(31, 31 - elem[1], -1):
+            next_bit = (elem[0] >> i) & 0x1
+            if (next_bit == 0):
+                if (cur.zero == None):
+                    cur.zero = node()
+                cur = cur.zero
+            elif (next_bit == 1):
+                if (cur.one == None):
+                    cur.one = node()
+                cur = cur.one
+        if (len(cur.ips) == 0):
+            cur.ips.append(elem)
+            cur.action = elem[2]
+
+    # optimize the tri
+    # root.printSelf(0)
+    root.optimize(None)
+    # root.printSelf(0)
+    result = []
+    root.output_compressed(32, 0, result)
+    return result
+
+
+class cisco_router(object):
+    '''
+    Cisco router parser.
+    The generated transfer function will have three sub-layers:
+    1) from input port to fwd port: the packet will go through input acl, and vlan untag process
+    2) from fwd port to pre-output port: the forwarding table will find output port. but the output
+    filter has not been applied yet.
+    3) from pre-output port to output port: this is where output acl filter is being done.
+    So in order to see the ultimate faith of packet, we need to apply the tf.T() 3 consequative times.
+    '''
+    PORT_ID_MULTIPLIER = 1
+    INTERMEDIATE_PORT_TYPE_CONST = 1
+    OUTPUT_PORT_TYPE_CONST = 2
+    PORT_TYPE_MULTIPLIER = 10000
+    SWITCH_ID_MULTIPLIER = 100000
+
+    def __init__(self, switch_id):
+        '''
+        Constructor
+        '''
+        # for each acl number has a list of acl dictionary entries
+        self.acl = {}
+        # for each vlan holds the list of ports in its spanning tree
+        self.vlan_span_ports = {}
+        # forwarding table
+        self.fwd_table = []
+        # arp table: ip-->(mac,vlan)
+        self.arp_table = {}
+        # mac table: mac-->ports
+        self.mac_table = {}
+        # mapping of ACLs to interfaces/vlans access-list# --> (interface, in/out, vlan, file, line)
+        self.acl_iface = {}
+        # list of vlans configured on this switch, and for each vlan,
+        # the set of access and trunk ports
+        self.configed_vlans = {}
+        # list of ports configured on this switch
+        self.config_ports = set()
+
+        self.switch_id = switch_id
+        self.port_to_id = {}
+        self.replaced_vlan = 0  # (from_vlan,to_vlan)
+        self.def_vlan = 1
+
+    def set_default_vlan(self, vlan):
+        self.def_vlan = vlan
+
+    def set_replaced_vlan(self, rw_vlan):
+        self.replaced_vlan = rw_vlan
+
+    def set_witch_id(self, switch_id):
+        self.switch_id = switch_id
+
+    def get_switch_id(self):
+        return self.switch_id
+
+    @staticmethod
+    def make_acl_dictionary_entry():
+        entry = {}
+        entry["action"] = True
+        entry["src_ip"] = 0
+        entry["src_ip_mask"] = 0xffffffff
+        entry["dst_ip"] = 0
+        entry["dst_ip_mask"] = 0xffffffff
+        entry["ip_protocol"] = 0  # Note: this is used instead of any ip protocol
+        entry["transport_src_begin"] = 0
+        entry["transport_src_end"] = 0xffff
+        entry["transport_dst_begin"] = 0
+        entry["transport_dst_end"] = 0xffff
+        entry["transport_ctrl_begin"] = 0
+        entry["transport_ctrl_end"] = 0xff
+        return entry
+
+    @staticmethod
+    def get_protocol_number(proto_name):
+        dict = {"ah": 51, "eigrp": 88, "esp": 50, "gre": 47, "icmp": 1, "igmp": 2, \
+                "igrp": 9, "ip": 0, "ipinip": 94, "nos": 4, "ospf": 89, "tcp": 6, \
+                "udp": 17}
+        if proto_name in dict.keys():
+            return dict[proto_name]
+        else:
+            try:
+                num = int(proto_name)
+                return num
+            except Exception as e:
+                return None
+
+    @staticmethod
+    def get_udp_port_number(port_name):
+        dict = {"biff": 512, "bootpc": 68, "bootps": 69, "discard": 9, \
+                "domain": 53, "dnsix": 90, "echo": 7, "mobile-ip": 434, \
+                "nameserver": 42, "netbios-dgm": 137, "netbios-ns": 138, \
+                "ntp": 123, "rip": 520, "snmp": 161, "snmptrap": 162, "sunrpc": 111, \
+                "syslog": 514, "tacacs-ds": 49, "talk": 517, "tftp": 69, "time": 37, \
+                "who": 513, "xdmcp": 177}
+        if port_name in dict.keys():
+            return dict[port_name]
+        else:
+            try:
+                num = int(port_name)
+                return num
+            except Exception as e:
+                return None
+
+    @staticmethod
+    def get_transport_port_number(port_name):
+        dict = {"bgp": 179, "chargen": 19, "daytime": 13, "discard": 9, \
+                "domain": 53, "echo": 7, "finger": 79, "ftp": 21, "ftp-data": 20, \
+                "gopher": 70, "hostname": 101, "irc": 194, "klogin": 543, \
+                "kshell": 544, "lpd": 515, "nntp": 119, "pop2": 109, "pop3": 110, \
+                "smtp": 25, "sunrpc": 111, "syslog": 514, "tacacs-ds": 65, \
+                "talk": 517, "telnet": 23, "time": 37, "uucp": 540, "whois": 43, \
+                "www": 80}
+        if port_name in dict.keys():
+            return dict[port_name]
+        else:
+            try:
+                num = int(port_name)
+                return num
+            except Exception as e:
+                return None
+
+    @staticmethod
+    def get_ethernet_port_name(port):
+        result = ""
+        reminder = ""
+        if port.lower().startswith("tengigabitethernet"):
+            result = "te"
+            reminder = port[len("tengigabitethernet"):]
+        elif port.lower().startswith("gigabitethernet"):
+            result = "gi"
+            reminder = port[len("gigabitethernet"):]
+        elif port.lower().startswith("fastethernet"):
+            result = "fa"
+            reminder = port[len("fastethernet"):]
+        else:
+            result = port
+        return "%s%s" % (result, reminder)
+
+    def parse_access_list_entry(self, entry, line_counter):
+
+        def parse_ip(lst):
+            result = {}
+            if lst[0].lower() == "any":
+                result["ip"] = 0
+                result["ip_mask"] = 0xffffffff
+                lst.pop(0)
+            elif lst[0].lower() == "host":
+                result["ip"] = dotted_ip_to_int(lst[1])
+                result["ip_mask"] = 0
+                lst.pop(0)
+                lst.pop(0)
+            elif is_ip_address(lst[0]):
+                result["ip"] = dotted_ip_to_int(lst[0])
+                if len(lst) > 1 and is_ip_address(lst[1]):
+                    result["ip_mask"] = dotted_ip_to_int(lst[1])
+                    lst.pop(0)
+                    lst.pop(0)
+                else:
+                    result["ip_mask"] = 0
+                    lst.pop(0)
+            return result
+
+        def parse_port(lst, proto):
+            result = {}
+            proto_reader = None
+
+            if proto == 6:
+                proto_reader = cisco_router.get_transport_port_number
+            elif proto == 17:
+                proto_reader = cisco_router.get_udp_port_number
+            else:
+                proto_reader = cisco_router.get_transport_port_number
+
+            if lst[0] == "eq":
+                lst.pop(0)
+                p = proto_reader(lst.pop(0))
+                if p != None:
+                    result["port_begin"] = p
+                    result["port_end"] = p
+            elif lst[0] == "gt":
+                lst.pop(0)
+                p = proto_reader(lst.pop(0))
+                if p != None:
+                    result["port_begin"] = p + 1
+                    result["port_end"] = 0xffff
+            elif lst[0] == "range":
+                lst.pop(0)
+                p1 = proto_reader(lst.pop(0))
+                p2 = proto_reader(lst.pop(0))
+                if p1 != None and p2 != None:
+                    result["port_begin"] = p1
+                    result["port_end"] = p2
+
+            return result
+
+        tokens = entry.split()
+        tokens.pop(0)
+        acl_number = tokens.pop(0)
+        acl_number_int = int(acl_number)
+
+        action = tokens.pop(0)
+        if action.lower() == "permit" or action.lower() == "deny":
+            if not acl_number in self.acl.keys():
+                self.acl[acl_number] = []
+
+            new_entry = self.make_acl_dictionary_entry()
+            new_entry["action"] = (action.lower() == "permit")
+
+            # standard access-list entry
+            if acl_number_int < 100:
+                new_entry["ip_protocol"] = 0
+                new_ip = parse_ip(tokens)
+                if (len(new_ip.keys()) > 0):
+                    new_entry["src_ip"] = new_ip["ip"]
+                    new_entry["src_ip_mask"] = new_ip["ip_mask"]
+                    self.acl[acl_number].append(new_entry)
+                    # print self.acl_dictionary_entry_to_string(new_entry)
+                    return True
+                else:
+                    return False
+
+            # extended access-list entry
+            else:
+                if self.get_protocol_number(tokens[0]) != None:
+                    new_entry["ip_protocol"] = self.get_protocol_number( \
+                        self.get_protocol_number(tokens.pop(0)))
+                elif is_ip_address(tokens[0]):
+                    new_entry["ip_protocol"] = 0
+                else:
+                    return False
+
+                # src ip address and ip mask
+                new_ip = parse_ip(tokens)
+                if (len(new_ip.keys()) > 0):
+                    new_entry["src_ip"] = new_ip["ip"]
+                    new_entry["src_ip_mask"] = new_ip["ip_mask"]
+
+                # src transport port number
+                if len(tokens) > 0:
+                    new_ports = parse_port(tokens, new_entry["ip_protocol"])
+                    if len(new_ports.keys()) > 0:
+                        new_entry["transport_src_begin"] = \
+                            new_ports["port_begin"]
+                        new_entry["transport_src_end"] = new_ports["port_end"]
+
+                # dst ip address and ip mask
+                if len(tokens) > 0:
+                    new_ip = parse_ip(tokens)
+                    if (len(new_ip.keys()) > 0):
+                        new_entry["dst_ip"] = new_ip["ip"]
+                        new_entry["dst_ip_mask"] = new_ip["ip_mask"]
+
+                # dst transport port number
+                if len(tokens) > 0:
+                    new_ports = parse_port(tokens, new_entry["ip_protocol"])
+                    if len(new_ports.keys()) > 0:
+                        new_entry["transport_dst_begin"] = \
+                            new_ports["port_begin"]
+                        new_entry["transport_dst_end"] = new_ports["port_end"]
+
+                # transport control bits
+                if len(tokens) > 0:
+                    t = tokens.pop(0)
+                    if t == "established":
+                        new_entry["transport_ctrl_begin"] = 0x80
+                        new_entry["transport_ctrl_end"] = 0xff
+
+                new_entry["line"] = [line_counter];
+                self.acl[acl_number].append(new_entry)
+                # print self.acl_dictionary_entry_to_string(new_entry)
+                return True
+
+    def parse_interface_config(self, iface_info, file_path):
+        def is_in_range(range, val):
+            st = range.split("-")
+            if len(st) > 1 and int(val) >= int(st[0]) and int(val) <= int(st[1]):
+                return True
+            elif len(st) == 1 and int(val) == int(st[0]):
+                return True
+            else:
+                return False
+
+        tokens = iface_info[0][0].split()
+        iface = cisco_router.get_ethernet_port_name(tokens[1].lower())
+        if iface.startswith("vlan"):
+            # vlan port
+            vlan = int(iface[4:])
+        else:
+            parts = re.split('\.', iface)
+            if len(parts) > 1:
+                # virtual port
+                vlan = int(parts[1])
+                iface = parts[0]
+                if str(vlan) not in self.configed_vlans.keys():
+                    self.configed_vlans[str(vlan)] = {"access": [], "trunk": [iface]}
+                else:
+                    self.configed_vlans[str(vlan)]["trunk"].append(iface)
+                if "vlan%d" % vlan not in self.vlan_span_ports:
+                    self.vlan_span_ports["vlan%d" % vlan] = [iface]
+                elif iface not in self.vlan_span_ports["vlan%d" % vlan]:
+                    self.vlan_span_ports["vlan%d" % vlan].append(iface)
+            else:
+                # physical port
+                vlan = None
+            self.config_ports.add(iface)
+
+        shutdown = False
+        vlan_ranges = []
+        access_vlan = None
+        port_mode = None
+        for (line, line_counter) in iface_info:
+            if line.startswith("shutdown"):
+                shutdown = True
+            elif line.startswith("switchport mode"):
+                tokens = line.split()
+                port_mode = tokens[2]
+            elif line.startswith("ip access-group"):
+                tokens = line.split()
+                if not tokens[2] in self.acl_iface.keys():
+                    self.acl_iface[tokens[2]] = []
+                self.acl_iface[tokens[2]].append( \
+                    (iface, tokens[3], vlan, file_path, [line_counter]))
+            elif line.startswith("switchport trunk allowed vlan"):
+                tokens = line.split()
+                allowed = tokens[-1]
+                if allowed.lower() != "none":
+                    vlan_ranges.extend(allowed.split(","))
+            elif line.startswith("switchport access vlan"):
+                tokens = line.split()
+                access_vlan = tokens[-1]
+
+        if shutdown:
+            if vlan != None:
+                if str(vlan) in self.configed_vlans:
+                    self.configed_vlans.pop(str(vlan))
+            else:
+                self.config_ports.remove(iface)
+        elif port_mode == "access" and access_vlan != None:
+            self.configed_vlans[access_vlan]["access"].append(iface)
+        elif port_mode == "trunk":
+            for v in self.configed_vlans.keys():
+                for range in vlan_ranges:
+                    if is_in_range(range, v):
+                        self.configed_vlans[v]["trunk"].append(iface)
+                        break
+
+    def read_config_file(self, file_path):
+        '''
+        Reads in the CISCO router config file and extracts access list entries
+        and the ports/vlans they apply to.
+        '''
+        "=== Reading Cisco Router Config File ==="
+        f = open(file_path, 'r')
+        reading_iface = False
+        iface_info = []
+        line_counter = 0
+        for line in f:
+            line = line.strip()
+            # read an access-list line
+            if line.startswith("access-list"):
+                self.parse_access_list_entry(line, line_counter)
+            # define a VLAN
+            elif line.startswith("vlan"):
+                tokens = line.split()
+                try:
+                    vlan = int(tokens[1])
+                    self.configed_vlans[str(vlan)] = {"access": [], "trunk": []}
+                except Exception as e:
+                    st = tokens[1].split("-")
+                    if len(st) > 1:
+                        try:
+                            s = int(st[0])
+                            t = int(st[1])
+                            for i in range(s, t + 1):
+                                self.configed_vlans[str(i)] = {"access": [], "trunk": []}
+                        except Exception:
+                            pass
+            # read interface config
+            elif line.startswith("interface"):
+                reading_iface = True
+                iface_info = [(line, line_counter)]
+            elif reading_iface:
+                iface_info.append((line, line_counter))
+                if line.startswith("!"):
+                    reading_iface = False
+                    self.parse_interface_config(iface_info, file_path)
+            line_counter = line_counter + 1
+        f.close()
+        "=== DONE Reading Cisco Router Config File ==="
+
+    def read_spanning_tree_file(self, file_path):
+        '''
+        Reads in, the CISCO router "sh spanning-tree" output and extracts the
+        list of ports that are in FWD mode for each vlan.
+        '''
+        "=== Reading Cisco Router Spanning Tree File ==="
+        current_vlan = 0
+        f = open(file_path, 'r')
+        for line in f:
+            tokens = line.split()
+            if len(tokens) == 0:
+                continue
+            if line.startswith("VLAN"):
+                if len(tokens) == 1:
+                    current_vlan = "vlan%d" % int(tokens[0][4:])
+                    if current_vlan not in self.vlan_span_ports:
+                        self.vlan_span_ports[current_vlan] = []
+            elif (("FWD" in tokens) or ("fwd" in tokens)):
+                port = tokens[0].lower()
+                if port not in self.vlan_span_ports[current_vlan]:
+                    self.vlan_span_ports[current_vlan].append(port)
+        f.close()
+        # print self.vlan_span_ports
+        "=== DONE Reading Cisco Router Spanning Tree File ==="
+
+    def read_arp_table_file(self, file_path):
+        '''
+        Reads in CISCO router arp table - sh arp
+        '''
+        "=== Reading Cisco Router ARP Table File ==="
+        f = open(file_path, 'r')
+        for line in f:
+            tokens = line.split()
+            if (len(tokens) >= 6 and tokens[4].lower() == "arpa"):
+                self.arp_table[tokens[1]] = \
+                    (tokens[3].lower(), tokens[5].lower())
+        f.close()
+        "=== DONE Reading Cisco Router ARP Table File ==="
+
+    def read_mac_table_file(self, file_path):
+        '''
+        Reads in CISCO mac address table - sh mac-address-table
+        '''
+        "=== Reading Cisco Mac Address Table File ==="
+        f = open(file_path, 'r')
+        seen_star = False
+        ports = []
+        mac = ""
+        for line in f:
+            tokens = line.split()
+            if (line.startswith("*")):
+                if (seen_star):
+                    self.mac_table[mac] = ports
+                    ports = []
+                mac = "vlan%s,%s" % (tokens[1], tokens[2])
+                seen_star = True
+                if (len(tokens) >= 7):
+                    ports.extend(tokens[6].split(","))
+            elif (seen_star):
+                ports.extend(tokens[0].split(","))
+        self.mac_table[mac] = ports
+        "=== DONE Reading Cisco Mac Address Table File ==="
+
+    def read_route_file(self, file_path):
+        '''
+        Reads in the CISCO router "sh ip cef" output and extracts the
+        forwarding table entries.
+        '''
+        "=== Reading Cisco Router IP CEF File ==="
+        f = open(file_path, 'r')
+        port = ""
+        line_counter = 0
+        for line in f:
+            tokens = line.split()
+            if len(tokens) == 0:
+                continue
+            if is_ip_subnet(tokens[0]):
+                ip_subnet = dotted_subnet_to_int(tokens[0])
+                if len(tokens) > 2:
+                    port = cisco_router.get_ethernet_port_name(tokens[2])
+                    # next hop is a vlan, but also we know the ip adress.
+                    # in this case we should find out which vlan port has
+                    # that ip address
+                    if port.lower().startswith("vlan") and \
+                            is_ip_address(tokens[1]):
+                        # look up next hop IP address in arp table to find the
+                        # mac address and output port
+                        if (tokens[1] in self.arp_table.keys()):
+                            (mac, vln) = self.arp_table[tokens[1]]
+                            # if next hop output port is a vlan, look it up in
+                            # mac table
+                            if vln.startswith("vlan"):
+                                vm_key = "%s,%s" % (vln, mac)
+                                # if mac-address-table for that vlan has the mac
+                                # address, find out the port
+                                if vm_key in self.mac_table.keys():
+                                    resolved_port = self.mac_table[vm_key][0]
+                                    vlan_num = int(vln[4:])
+                                    port = "%s.%d" % ( \
+                                        cisco_router.get_ethernet_port_name(resolved_port) \
+                                            , vlan_num)
+                            # if next hop output port is not vlan, use it
+                            else:
+                                port = cisco_router.get_ethernet_port_name(vln)
+                    # next hop is an attached vlan
+                    elif port.lower().startswith("vlan"):
+                        vlan = int(port[4:])
+                    else:
+                        parts = re.split('\.', port)
+                        if len(parts) > 1 and self.replaced_vlan != None and int(parts[1]) == self.replaced_vlan:
+                            port = "%s.%d" % (parts[0], self.replaced_vlan)
+                            vlan = self.replaced_vlan
+                        elif len(parts) > 1:
+                            vlan = int(parts[1])
+                else:
+                    port = "self"
+
+                if port.lower().startswith("loopback") or \
+                        port.lower().startswith("null") or \
+                        tokens[1].lower().startswith("drop"):
+                    port = "self"
+
+                self.fwd_table.append([ip_subnet[0], ip_subnet[1], port.lower(),
+                                       file_path, [line_counter]])
+            line_counter = line_counter + 1
+        f.close()
+        "=== DONE Reading Cisco Router IP CEF File ==="
+
+    def generate_port_ids(self, additional_ports):
+        '''
+        looks at all the ports that has FWD mode for any vlan
+        or appear as forwarding port of a forwarding rule, and assign a unique
+        ID to them based on switch_id and a random port id.
+        addition_ports will also be considered and assigned a unqie ID. This is
+        for ports that exist on the switch but are not part of any vlan or
+        output of forwarding rules.
+        '''
+        "=== Generating port IDs ==="
+        s = set(additional_ports)
+        for elem in self.config_ports:
+            s.add(elem)
+        for vlan in self.vlan_span_ports.keys():
+            for elem in self.vlan_span_ports[vlan]:
+                s.add(elem)
+        suffix = 1
+        for p in s:
+            id = self.switch_id * self.SWITCH_ID_MULTIPLIER + \
+                 suffix * self.PORT_ID_MULTIPLIER
+            self.port_to_id[p] = id
+            suffix += 1
+        "=== DONE generating port IDs ==="
+
+    def generate_port_ids_only_for_output_ports(self):
+        "=== Generating port IDs ==="
+        s = set()
+        for fwd_rule in self.fwd_table:
+            m = re.split('\.', fwd_rule[2])
+            if len(m) > 1:
+                s.add(m[0])
+            elif fwd_rule[2].startswith('vlan'):
+                if fwd_rule[2] in self.vlan_span_ports.keys():
+                    port_list = self.vlan_span_ports[fwd_rule[2]]
+                    for p in port_list:
+                        s.add(p)
+            elif fwd_rule[2] != "self":
+                s.add(fwd_rule[2])
+            suffix = 1
+        for p in s:
+            id = self.switch_id * self.SWITCH_ID_MULTIPLIER + \
+                 suffix * self.PORT_ID_MULTIPLIER
+            self.port_to_id[p] = id
+            suffix += 1
+        "=== DONE generating port IDs ==="
+
+    def get_port_id(self, port_name):
+        if port_name in self.port_to_id.keys():
+            return self.port_to_id[port_name]
+        else:
+            return None
+
+    def optimize_forwarding_table(self):
+        "=== Compressing forwarding table ==="
+        " * Originally has %d ip fwd entries * " % len(self.fwd_table)
+        n = compress_ip_list(self.fwd_table)
+        " * After compression has %d ip fwd entries * " % len(n)
+        self.fwd_table = n
+        "=== DONE forwarding table compression ==="

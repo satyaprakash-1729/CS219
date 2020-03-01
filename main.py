@@ -56,6 +56,8 @@ class Utils:
 
     @staticmethod
     def convert_int_to_ip(num):
+        if num == 0:
+            return "0.0.0.0"
         binary_form = '{0:32b}'.format(num)
         first = int(binary_form[:8], 2)
         second = int(binary_form[8:16], 2)
@@ -64,7 +66,7 @@ class Utils:
         return str(first) + "." + str(second) + "." + str(third) + "." + str(fourth)
 
     @staticmethod
-    def parse_input_data(df, verbose=False):
+    def parse_input_data(df_route, df_acl, verbose=False):
         router_list = {}
         router_temp_list = {}
         rule_list = []
@@ -72,10 +74,10 @@ class Utils:
         edge_list = {}
         cidr_list = {}
         print("Creating Routers....")
-        for i in range(len(df)):
-            rid = int(df.iloc[i, 0])
-            cidr = df.iloc[i, 1]
-            fid = int(df.iloc[i, 2])
+        for i in range(len(df_route)):
+            rid = df_route.iloc[i, 0]
+            cidr = df_route.iloc[i, 1]
+            fid = df_route.iloc[i, 2]
             cidr_list[(rid, fid)] = cidr
             prefix = Utils.get_prefix_with_mask(cidr)
             if rid not in router_list:
@@ -91,6 +93,10 @@ class Utils:
             router_temp_list[rid].append((prefix, rule_number))
             rule_list.append(Rule(rule_number, prefix, fid))
             rule_number += 1
+
+        print("Parsing ACL Rules...")
+        for i in range(len(df_acl)):
+
 
         for rid, rule in router_temp_list.items():
             router_temp_list[rid].sort(key=lambda x: len(x[0]))
@@ -155,7 +161,7 @@ class Router:
         for i in range(len(self.policies)):
             rule = self.policies[i][0]
             negations = self.policies[i][1]
-            x = Int('x')
+            x = Int('dst')
             parsed = Utils.convert_prefix_to_boolean_expr(x, rule.prefix)
             for neg in negations:
                 parsed = And(parsed, Not(Utils.convert_prefix_to_boolean_expr(x, rule_list[neg].prefix)))
@@ -178,8 +184,8 @@ class AntEater:
         final_rule = dp[s][1]
         for i in range(2, k+1):
             final_rule = Or(final_rule, dp[s][i])
-        final_rule = And(final_rule, Int('x') > 0)
-        final_rule = And(final_rule, Int('x') < 2 ** 32)
+        final_rule = And(final_rule, Int('dst') > 0)
+        final_rule = And(final_rule, Int('dst') < 2 ** 32)
         return final_rule
 
     def loop_detection(self):
@@ -199,8 +205,8 @@ class AntEater:
             del self.router_list[new_router_id]
             for added in added_list:
                 added.pop()
-        final_rule = And(final_rule, Int('x') > 0)
-        final_rule = And(final_rule, Int('x') < 2 ** 32)
+        final_rule = And(final_rule, Int('dst') > 0)
+        final_rule = And(final_rule, Int('dst') < 2 ** 32)
         return final_rule
 
     def packet_loss(self, vertex, destinations):
@@ -219,8 +225,8 @@ class AntEater:
         del self.router_list[new_router_id]
         for rid in destinations:
             self.router_list[rid].policies.pop()
-        final_rule = And(final_rule, Int('x') > 0)
-        final_rule = And(final_rule, Int('x') < 2**32)
+        final_rule = And(final_rule, Int('dst') > 0)
+        final_rule = And(final_rule, Int('dst') < 2**32)
         return final_rule
 
 
@@ -284,15 +290,17 @@ class TestSuite:
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('-f', '--router_file', help="Router List File", action='store', required=True)
-    parser.add_argument('-t', '--test_id', help="1: reachability 2: loop 3: packet loss", action='store', required=True)
-    parser.add_argument('-n', '--draw_network', help="Network display toggle", action='store_true')
-    args = parser.parse_args()
+    argparser = argparse.ArgumentParser()
+    argparser.add_argument('-f', '--router_file', help="Router List File", action='store', required=True)
+    argparser.add_argument('-f', '--acl_file', help="ACL Rule File", action='store', required=True)
+    argparser.add_argument('-t', '--test_id', help="1: reachability 2: loop 3: packet loss", action='store', required=True)
+    argparser.add_argument('-n', '--draw_network', help="Network display toggle", action='store_true')
+    args = argparser.parse_args()
     print("Reading network flow file . . .")
-    df = pd.read_csv(args.router_file)
+    df_route = pd.read_csv(args.router_file)
+    df_acl = pd.read_csv(args.acl_file)
 
-    router_list, rule_list = Utils.parse_input_data(df, args.draw_network)
+    router_list, rule_list = Utils.parse_input_data(df_route, df_acl, args.draw_network)
     anteater = AntEater(router_list, rule_list)
 
     print("-----------------------------")

@@ -1,0 +1,16 @@
+1,bbra_rtr
+2,bbrb_rtr
+3,boza_rtr
+4,bozb_rtr
+5,coza_rtr
+6,cozb_rtr
+7,goza_rtr
+8,gozb_rtr
+9,poza_rtr
+10,pozb_rtr
+11,roza_rtr
+12,rozb_rtr
+13,soza_rtr
+14,sozb_rtr
+15,yoza_rtr
+16,yozb_rtr
