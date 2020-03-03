@@ -3,6 +3,7 @@ import argparse
 import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 
 class BinaryTrie:
@@ -71,8 +72,8 @@ class Utils:
         router_temp_list = {}
         rule_list = []
         rule_number = 0
-        print("Creating Routers....")
-        for i in range(len(df_route)):
+        print("Parsing Forwarding Rules....")
+        for i in tqdm(range(len(df_route))):
             rid = df_route.iloc[i, 0]
             cidr = df_route.iloc[i, 1]
             if "|" in df_route.iloc[i, 2]:
@@ -99,7 +100,7 @@ class Utils:
             router_list[rid].parse_policies(rule_list)
 
         print("Parsing ACL Rules...")
-        for rtr_name, df_acl in acl_dfs.items():
+        for rtr_name, df_acl in tqdm(acl_dfs.items()):
             rid = id_map[rtr_name]
             router_list[rid].parse_acl_policies(df_acl)
 
@@ -156,7 +157,8 @@ class Router:
         #     _, action, src_ip, src_ip_mask, dst_ip, dst_ip_mask,\
         #         _, transport_src_begin, transport_src_end, transport_dst_begin,\
         #         transport_dst_end, transport_ctrl_begin, transport_ctrl_end, _ = df_acl.iloc[i]
-        #     src_ip_start =
+        #     src_ip_start = src_ip // src_ip_mask
+        #     src_ip_end = src_ip_start + src_ip_mask
         #     y = Int('')
 
     def populate_policies(self, node, rule_list):
@@ -327,9 +329,9 @@ def main():
             rtr_name = str(file.split("_")[1]) + "_rtr"
             acl_dfs[rtr_name] = df_acl
 
-    df_topo = pd.read_csv(args.topology_file)
+    df_topo = pd.read_csv(args.topology_file, header=None)
 
-    df_id_map = pd.read_csv(args.id_map)
+    df_id_map = pd.read_csv(args.id_map, header=None)
     id_map = {}
     for i in range(len(df_id_map)):
         id_map[df_id_map.iloc[i, 1]] = int(df_id_map.iloc[i, 0])
