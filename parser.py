@@ -106,7 +106,7 @@ class Parser:
                              "," + str(to_cs.get_switch_id()) + ","+str(to_port) + "\n")
 
         print("Writing ID to router map . . . .")
-        with open(output_path + "_router_id_map.txt", "w") as f_rtr_id:
+        with open(output_path + "_router_id_map.csv", "w") as f_rtr_id:
             for rtr, cs in tqdm(self.cs_list.items()):
                 f_rtr_id.write(str(cs.get_switch_id()) + "," + rtr + "\n")
 
@@ -144,7 +144,7 @@ class Parser:
                         to_rtr, to_port = self.topology_data[(rtr, port_to_send)]
                         switch_id = self.cs_list[to_rtr].get_switch_id()
                         switch_ids.append(str(switch_id))
-                if len(switch_ids)>0:
+                if len(switch_ids) > 0:
                     self.forwarding_rules.append([rtr_id, ip+"/"+str(mask), "|".join(switch_ids)])
 
     def convert_to_custom_format(self):

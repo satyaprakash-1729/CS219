@@ -785,3 +785,389 @@ class cisco_router(object):
         " * After compression has %d ip fwd entries * " % len(n)
         self.fwd_table = n
         "=== DONE forwarding table compression ==="
+
+    def generate_transfer_function(self, tf):
+        '''
+        After calling read_config_file(), read_spanning_tree_file(),
+        read_route_file(), generate_port_ids() and optionally
+        optimize_forwarding_table(),
+        this method may be called to generate transfer function rules
+        corresponding to this box.
+        The rules will be added to transfer function tf passed to the function.
+        '''
+        print
+        "=== Generating Transfer Function ==="
+        # generate the input part of tranfer function from in_port to fwd_port
+        # and output part from intermedite port s to output ports
+        print
+        " * Generating ACL transfer function * "
+        for acl in self.acl_iface.keys():
+            if acl not in self.acl.keys():
+                continue
+            for acl_instance in self.acl_iface[acl]:
+                file_name = acl_instance[3]
+                trunk_ports = []
+                access_ports = []
+                vlan = acl_instance[2]
+                # if vlan is shutdown, ignore it
+                if str(vlan) not in self.configed_vlans.keys():
+                    continue
+                if acl_instance[0].startswith("vlan"):
+                    for p in self.vlan_span_ports[acl_instance[0]]:
+                        trunk_ports.append(self.port_to_id[p])
+                    for p in self.configed_vlans[str(vlan)]["access"]:
+                        pid = self.port_to_id[p]
+                        access_ports.append(pid)
+                        if (pid in trunk_ports):
+                            trunk_ports.remove(pid)
+                else:
+                    access_ports = [self.port_to_id(acl_instance[0])]
+                for acl_dic_entry in self.acl[acl]:
+                    matches = self.acl_dict_entry_to_wc(acl_dic_entry)
+                    lines = acl_instance[4]
+                    lines.extend(acl_dic_entry["line"])
+                    # *** IN ACL ENTRIES
+                    if acl_instance[1] == "in":
+                        in_ports = trunk_ports
+                        out_ports = []
+                        if (acl_dic_entry["action"]):
+                            out_ports = \
+                                [self.switch_id * self.SWITCH_ID_MULTIPLIER]
+                        for match in matches:
+                            # IN ACL for VLAN tagged packets going to trunk or
+                            # access ports
+                            self.set_field(match, "vlan", vlan, 0)
+                            next_rule = TF.create_standard_rule(in_ports,
+                                                                match,
+                                                                out_ports,
+                                                                None, None,
+                                                                file_name,
+                                                                lines)
+                            tf.add_fwd_rule(next_rule)
+                            # IN ACL for un-vlan tagged packets received on
+                            # access ports. If there is any access port, we
+                            # should accept untagged packets, and tag them
+                            # with the corresponding VLAN tag.
+                            if (len(access_ports) > 0):
+                                self.set_field(match, "vlan", 0, 0)
+                                mask = None
+                                rewrite = None
+                                if (vlan != None):
+                                    mask = wildcard_create_bit_repeat(self.hs_format["length"], 0x2)
+                                    rewrite = wildcard_create_bit_repeat(self.hs_format["length"], 0x1)
+                                    self.set_field(mask, 'vlan', 0, 0)
+                                    self.set_field(rewrite, 'vlan', vlan, 0)
+                                next_rule = TF.create_standard_rule(access_ports, \
+                                                                    match,
+                                                                    out_ports,
+                                                                    mask, rewrite,
+                                                                    file_name, lines)
+                                tf.add_fwd_rule(next_rule)
+                    # *** OUT ACL ENTRIES
+                    elif acl_instance[1] == "out" and vlan != None:
+                        for match in matches:
+                            self.set_field(match, "vlan", vlan, 0)
+                            if (not acl_dic_entry["action"]):
+                                out_ports = []
+                                in_ports = []
+                                for port in trunk_ports:
+                                    in_ports.append(port + self.PORT_TYPE_MULTIPLIER * \
+                                                    self.INTERMEDIATE_PORT_TYPE_CONST)
+                                for port in access_ports:
+                                    in_ports.append(port + self.PORT_TYPE_MULTIPLIER * \
+                                                    self.INTERMEDIATE_PORT_TYPE_CONST)
+                                next_rule = TF.create_standard_rule(in_ports, match, \
+                                                                    out_ports, \
+                                                                    None, None, \
+                                                                    file_name, lines)
+                                tf.add_fwd_rule(next_rule)
+                            else:
+                                for port in trunk_ports:
+                                    in_ports = [port + self.PORT_TYPE_MULTIPLIER * \
+                                                self.INTERMEDIATE_PORT_TYPE_CONST]
+                                    out_ports = [port + self.PORT_TYPE_MULTIPLIER * \
+                                                 self.OUTPUT_PORT_TYPE_CONST]
+                                    next_rule = TF.create_standard_rule(in_ports, match, \
+                                                                        out_ports, None, None, \
+                                                                        file_name, lines)
+                                    tf.add_fwd_rule(next_rule)
+                                for port in access_ports:
+                                    # If sending out from an access port, strip the VLAN tag
+                                    in_ports = [port + self.PORT_TYPE_MULTIPLIER * \
+                                                self.INTERMEDIATE_PORT_TYPE_CONST]
+                                    out_ports = [port + self.PORT_TYPE_MULTIPLIER * \
+                                                 self.OUTPUT_PORT_TYPE_CONST]
+                                    mask = wildcard_create_bit_repeat(self.hs_format["length"], 0x2)
+                                    rewrite = wildcard_create_bit_repeat(self.hs_format["length"], 0x1)
+                                    self.set_field(mask, 'vlan', 0, 0)
+                                    self.set_field(rewrite, 'vlan', 0, 0)
+                                    next_rule = TF.create_standard_rule(in_ports, \
+                                                                        match, \
+                                                                        out_ports, \
+                                                                        mask, rewrite, \
+                                                                        file_name, lines)
+                                    tf.add_fwd_rule(next_rule)
+                    # ** OUT ACL for non-vlan port
+                    elif acl_instance[1] == "out" and vlan == None:
+                        for match in matches:
+                            for port in access_ports:
+                                # If sending out from an access port, strip the VLAN tag
+                                in_ports = [port + self.PORT_TYPE_MULTIPLIER * \
+                                            self.INTERMEDIATE_PORT_TYPE_CONST]
+                                out_ports = [port + self.PORT_TYPE_MULTIPLIER * \
+                                             self.OUTPUT_PORT_TYPE_CONST]
+                                if (not acl_dic_entry["action"]):
+                                    out_ports = []
+                                next_rule = TF.create_standard_rule(in_ports, \
+                                                                    match, \
+                                                                    out_ports, \
+                                                                    None, None, \
+                                                                    file_name, lines)
+                                tf.add_fwd_rule(next_rule)
+
+        # *** default rule for all vlans configured on this switch
+        all_access_ports = set()
+        intermediate_port = [self.switch_id * self.SWITCH_ID_MULTIPLIER]
+        for cnf_vlan in self.configed_vlans.keys():
+            if "vlan%s" % cnf_vlan not in self.vlan_span_ports.keys():
+                continue
+            trunk_ports = []
+            access_ports = []
+            for p in self.vlan_span_ports["vlan%s" % cnf_vlan]:
+                trunk_ports.append(self.port_to_id[p])
+            for p in self.configed_vlans[cnf_vlan]["access"]:
+                pid = self.port_to_id[p]
+                access_ports.append(pid)
+                all_access_ports.add(pid)
+                if (pid in trunk_ports):
+                    trunk_ports.remove(pid)
+
+            # default rule for vlan tagged packets received on trunk port
+            match = wildcard_create_bit_repeat(self.hs_format["length"], 0x3)
+            self.set_field(match, "vlan", int(cnf_vlan), 0)
+            def_rule = TF.create_standard_rule(trunk_ports, match, \
+                                               intermediate_port, \
+                                               None, None, "", [])
+            tf.add_fwd_rule(def_rule)
+
+            # default rule for un-vlan tagged packets received on access port
+            if (len(access_ports) > 0):
+                match = wildcard_create_bit_repeat(self.hs_format["length"], 0x3)
+                self.set_field(match, "vlan", 0, 0)
+                mask = wildcard_create_bit_repeat(self.hs_format["length"], 0x2)
+                rewrite = wildcard_create_bit_repeat(self.hs_format["length"], 0x1)
+                self.set_field(mask, 'vlan', 0, 0)
+                self.set_field(rewrite, 'vlan', int(cnf_vlan), 0)
+                def_rule = TF.create_standard_rule(access_ports, match, \
+                                                   intermediate_port, \
+                                                   mask, rewrite, "", [])
+                tf.add_fwd_rule(def_rule)
+
+            # default rules for vlan-tagged outgoing packets on an access port
+            for port_id in access_ports:
+                match = wildcard_create_bit_repeat(self.hs_format["length"], 0x3)
+                mask = wildcard_create_bit_repeat(self.hs_format["length"], 0x2)
+                rewrite = wildcard_create_bit_repeat(self.hs_format["length"], 0x1)
+                self.set_field(match, "vlan", int(cnf_vlan), 0)
+                self.set_field(mask, 'vlan', 0, 0)
+                self.set_field(rewrite, 'vlan', 0, 0)
+                before_out_port = [port_id + self.PORT_TYPE_MULTIPLIER * \
+                                   self.INTERMEDIATE_PORT_TYPE_CONST]
+                after_out_port = [port_id + self.PORT_TYPE_MULTIPLIER * \
+                                  self.OUTPUT_PORT_TYPE_CONST]
+                def_rule = TF.create_standard_rule(before_out_port, match, \
+                                                   after_out_port, \
+                                                   mask, rewrite, "", [])
+                tf.add_rewrite_rule(def_rule)
+
+        # default rules for any outgoing packets on a non-access port
+        for port in self.port_to_id.keys():
+            if port != "self" and port not in all_access_ports:
+                port_id = self.port_to_id[port]
+                match = wildcard_create_bit_repeat(self.hs_format["length"], 0x3)
+                before_out_port = [port_id + self.PORT_TYPE_MULTIPLIER * \
+                                   self.INTERMEDIATE_PORT_TYPE_CONST]
+                after_out_port = [port_id + self.PORT_TYPE_MULTIPLIER * \
+                                  self.OUTPUT_PORT_TYPE_CONST]
+                def_rule = TF.create_standard_rule(before_out_port, match, \
+                                                   after_out_port, \
+                                                   None, None, "", [])
+                tf.add_fwd_rule(def_rule)
+
+        # defult rule for unvaln-tagged packets received on an trunk port
+        if self.def_vlan in self.configed_vlans.keys():
+            for port in self.port_to_id.keys():
+                if port != "self" and port not in all_access_ports:
+                    port_id = self.port_to_id[port]
+                    match = wildcard_create_bit_repeat(self.hs_format["length"], 0x3)
+                    self.set_field(match, "vlan", 0, 0)
+                    mask = wildcard_create_bit_repeat(self.hs_format["length"], 0x2)
+                    rewrite = wildcard_create_bit_repeat(self.hs_format["length"], 0x1)
+                    self.set_field(mask, 'vlan', 0, 0)
+                    self.set_field(rewrite, 'vlan', self.def_vlan, 0)
+                    def_rule = TF.create_standard_rule([port_id], match, \
+                                                       intermediate_port, \
+                                                       mask, rewrite, "", [])
+                    tf.add_fwd_rule(def_rule)
+
+        ###################################
+        print
+        " * Generating IP forwarding transfer function... * "
+        # generate the forwarding part of transfer fucntion, from the fwd_prt,
+        # to pre-output ports
+        for subnet in range(32, -1, -1):
+            for fwd_rule in self.fwd_table:
+                if fwd_rule[1] == subnet:
+                    # in -ports and match bytearray
+                    match = wildcard_create_bit_repeat(self.hs_format["length"], 0x3)
+                    self.set_field(match, "ip_dst", int(fwd_rule[0]), 32 - subnet)
+                    in_port = [self.switch_id * self.SWITCH_ID_MULTIPLIER]
+                    # mask, rewrite
+                    mask = wildcard_create_bit_repeat(self.hs_format["length"], 0x2)
+                    rewrite = wildcard_create_bit_repeat(self.hs_format["length"], 0x1)
+                    # find out the file-line it represents:
+                    lines = []
+                    file_name = ""
+                    if len(fwd_rule) == 4:
+                        for c_rule in fwd_rule[3]:
+                            file_name = c_rule[3]
+                            lines.extend(c_rule[4])
+                    else:
+                        file_name = fwd_rule[3]
+                        lines.extend(fwd_rule[4])
+                    # set up out_ports
+                    out_ports = []
+                    vlan = 0
+                    m = re.split('\.', fwd_rule[2])
+                    # drop rules:
+                    if fwd_rule[2] == "self":
+                        self_rule = TF.create_standard_rule(in_port, match, [], \
+                                                            None, None, file_name, lines)
+                        tf.add_fwd_rule(self_rule)
+                    # non drop rules
+                    else:
+                        # sub-ports: port.vlan
+                        if len(m) > 1:
+                            if m[0] in self.port_to_id.keys():
+                                out_ports.append(self.port_to_id[m[0]] + \
+                                                 self.PORT_TYPE_MULTIPLIER * \
+                                                 self.INTERMEDIATE_PORT_TYPE_CONST)
+
+                                vlan = int(m[1])
+                            else:
+                                print
+                                "ERROR: unrecognized port %s" % m[0]
+                                return -1
+                        # vlan outputs
+                        elif fwd_rule[2].startswith('vlan'):
+                            if fwd_rule[2] in self.vlan_span_ports.keys():
+                                port_list = self.vlan_span_ports[fwd_rule[2]]
+                                for p in port_list:
+                                    out_ports.append(self.port_to_id[p] + \
+                                                     self.PORT_TYPE_MULTIPLIER * \
+                                                     self.INTERMEDIATE_PORT_TYPE_CONST)
+                                vlan = int(fwd_rule[2][4:])
+                            else:
+                                print
+                                "ERROR: unrecognized vlan %s" % fwd_rule[2]
+                                return -1
+                        # physical ports - no vlan taging
+                        else:
+                            if fwd_rule[2] in self.port_to_id.keys():
+                                out_ports.append(self.port_to_id[fwd_rule[2]] + \
+                                                 self.PORT_TYPE_MULTIPLIER * \
+                                                 self.INTERMEDIATE_PORT_TYPE_CONST)
+                                vlan = 0
+                            else:
+                                print
+                                "ERROR: unrecognized port %s" % fwd_rule[2]
+                                return -1
+                        # now set the fields
+                        self.set_field(mask, 'vlan', 0, 0)
+                        self.set_field(rewrite, 'vlan', vlan, 0)
+                        tf_rule = TF.create_standard_rule(in_port, match, out_ports,
+                                                          mask, rewrite, \
+                                                          file_name, lines)
+                        tf.add_rewrite_rule(tf_rule)
+
+        return 0
+
+    def generate_fwd_table_tf(self):
+        '''
+        same as generate_transfer_function, but only generate transfer function
+        for the ip forwarding table
+        '''
+        " * Generating IP forwarding transfer function... * "
+        # generate the forwarding part of transfer fucntion, from the fwd_prt,
+        # to pre-output ports
+        for subnet in range(32, -1, -1):
+            for fwd_rule in self.fwd_table:
+                if fwd_rule[1] == subnet:
+                    # in -ports and match bytearray
+                    # match = wildcard_create_bit_repeat(self.hs_format["length"], \
+                    #                                    0x3)
+                    # self.set_field(match, "ip_dst", int(fwd_rule[0]), 32 - subnet)
+                    in_ports = []
+                    for p in self.port_to_id.keys():
+                        in_ports.append(self.port_to_id[p])
+                    lines = []
+                    file_name = ""
+                    if len(fwd_rule) == 4:
+                        for c_rule in fwd_rule[3]:
+                            file_name = c_rule[3]
+                            lines.extend(c_rule[4])
+                    else:
+                        file_name = fwd_rule[3]
+                        lines.extend(fwd_rule[4])
+                    out_ports = []
+                    m = re.split('\.', fwd_rule[2])
+                    if fwd_rule[2] == "self":
+                        pass
+                        # self_rule = TF.create_standard_rule(in_ports, match, [], \
+                        #                                     None, None, \
+                        #                                     file_name, lines)
+                        # tf.add_fwd_rule(self_rule)
+                    # non drop rules
+                    else:
+                        # sub-ports: port.vlan
+                        if len(m) > 1:
+                            if m[0] in self.port_to_id.keys():
+                                out_ports.append(self.port_to_id[m[0]] + \
+                                                 self.PORT_TYPE_MULTIPLIER * \
+                                                 self.OUTPUT_PORT_TYPE_CONST)
+                            else:
+                                print
+                                "ERROR: unrecognized port %s" % m[0]
+                                return -1
+                        # vlan outputs
+                        elif fwd_rule[2].startswith('vlan'):
+                            if fwd_rule[2] in self.vlan_span_ports.keys():
+                                port_list = self.vlan_span_ports[fwd_rule[2]]
+                                for p in port_list:
+                                    if p in self.port_to_id.keys():
+                                        out_ports.append(self.port_to_id[p] + \
+                                                         self.PORT_TYPE_MULTIPLIER * \
+                                                         self.OUTPUT_PORT_TYPE_CONST)
+                            else:
+                                print
+                                "ERROR: unrecognized vlan %s" % fwd_rule[2]
+                                return -1
+                        # physical ports - no vlan taging
+                        else:
+                            if fwd_rule[2] in self.port_to_id.keys():
+                                out_ports.append(self.port_to_id[fwd_rule[2]] + \
+                                                 self.PORT_TYPE_MULTIPLIER * \
+                                                 self.OUTPUT_PORT_TYPE_CONST)
+                            else:
+                                print
+                                "ERROR: unrecognized port %s" % fwd_rule[2]
+                                return -1
+                        print(in_ports, out_ports)
+                        # tf_rule = TF.create_standard_rule(in_ports, match, \
+                        #                                   out_ports, \
+                        #                                   None, None, \
+                        #                                   file_name, lines)
+                        # tf.add_fwd_rule(tf_rule)
+
+        "=== Successfully Generated Transfer function ==="
+        return 0

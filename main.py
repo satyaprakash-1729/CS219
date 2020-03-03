@@ -26,10 +26,10 @@ class BinaryTrie:
 
 
 class Rule:
-    def __init__(self, rule_number, prefix, forward_id):
+    def __init__(self, rule_number, prefix, forward_ids):
         self.rule_number = rule_number
         self.prefix = prefix
-        self.forwarded_to = forward_id
+        self.forwarded_to = forward_ids
 
 
 class Utils:
@@ -66,37 +66,30 @@ class Utils:
         return str(first) + "." + str(second) + "." + str(third) + "." + str(fourth)
 
     @staticmethod
-    def parse_input_data(df_route, df_acl, verbose=False):
+    def parse_input_data(df_route, acl_dfs, df_topology, id_map, verbose=False):
         router_list = {}
         router_temp_list = {}
         rule_list = []
         rule_number = 0
-        edge_list = {}
-        cidr_list = {}
         print("Creating Routers....")
         for i in range(len(df_route)):
             rid = df_route.iloc[i, 0]
             cidr = df_route.iloc[i, 1]
-            fid = df_route.iloc[i, 2]
-            cidr_list[(rid, fid)] = cidr
+            if "|" in df_route.iloc[i, 2]:
+                fids = list(map(int, df_route.iloc[i, 2].split("|")))
+            else:
+                fids = [int(df_route.iloc[i, 2])]
             prefix = Utils.get_prefix_with_mask(cidr)
             if rid not in router_list:
                 router_list[rid] = Router(rid)
                 router_temp_list[rid] = []
-            if fid not in router_list:
-                router_list[fid] = Router(fid)
-                router_temp_list[fid] = []
-            if rid not in edge_list:
-                edge_list[rid] = [(fid, prefix+"*")]
-            else:
-                edge_list[rid].append((fid, prefix+"*"))
+            for fid in fids:
+                if fid not in router_list:
+                    router_list[fid] = Router(fid)
+                    router_temp_list[fid] = []
             router_temp_list[rid].append((prefix, rule_number))
-            rule_list.append(Rule(rule_number, prefix, fid))
+            rule_list.append(Rule(rule_number, prefix, fids))
             rule_number += 1
-
-        # print("Parsing ACL Rules...")
-        # for i in range(len(df_acl)):
-
 
         for rid, rule in router_temp_list.items():
             router_temp_list[rid].sort(key=lambda x: len(x[0]))
@@ -105,25 +98,37 @@ class Utils:
             router_list[rid].populate_policies(router_list[rid].rule_book, rule_list)
             router_list[rid].parse_policies(rule_list)
 
+        print("Parsing ACL Rules...")
+        for rtr_name, df_acl in acl_dfs.items():
+            rid = id_map[rtr_name]
+            router_list[rid].parse_acl_policies(df_acl)
+
         if verbose:
-            print(">>> Number of routers: ", len(router_list.keys()))
+            router_list1 = []
+            edge_list = []
+            for i in range(len(df_topology)):
+                src = int(df_topology.iloc[i, 0])
+                dst = int(df_topology.iloc[i, 2])
+                if src not in router_list:
+                    router_list1.append(src)
+                if dst not in router_list:
+                    router_list1.append(dst)
+                edge_list.append((src, dst))
+
+            print(">>> Number of routers: ", len(router_list1))
             graph = nx.DiGraph()
 
-            graph.add_nodes_from(router_list.keys())
+            graph.add_nodes_from(router_list1)
             label_nodes = {}
-            for k, _ in router_list.items():
+            for k in router_list1:
                 label_nodes[k] = k
-            edges = []
-            for src in edge_list.keys():
-                for dst in edge_list[src]:
-                    graph.add_edge(src, dst[0], length=10)
-                    edges.append((src, dst[0]))
+            for src, dst in edge_list:
+                graph.add_edge(src, dst, length=10)
             pos = nx.spring_layout(graph)
-            nx.draw_networkx_nodes(graph, pos, router_list.keys())
-            nx.draw_networkx_edges(graph, pos, edges, arrowstyle="->", arrowsize=20, width=2)
-            nx.draw_networkx_edge_labels(graph, pos, cidr_list, font_size=7, alpha=0.7)
+            nx.draw_networkx_nodes(graph, pos, router_list1)
+            nx.draw_networkx_edges(graph, pos, edge_list, arrowstyle="->", arrowsize=20, width=2)
             nx.draw_networkx_labels(graph, pos, label_nodes)
-            plt.show()
+            plt.savefig("fig.png")
 
         return router_list, rule_list
 
@@ -134,6 +139,7 @@ class Router:
         self.rule_book = BinaryTrie()
         self.done_adding = False
         self.policies = None
+        self.acl_policies = None
 
     def add_rule(self, rule):
         self.rule_book.add_prefix(rule, prefix=rule.prefix)
@@ -142,6 +148,15 @@ class Router:
         for rule in rule_list:
             self.add_rule(rule)
         self.done_adding = True
+
+    def parse_acl_policies(self, df_acl):
+        #TO IMPLEMENT
+        # for i in range(len(df_acl)):
+        #     _, action, src_ip, src_ip_mask, dst_ip, dst_ip_mask,\
+        #         _, transport_src_begin, transport_src_end, transport_dst_begin,\
+        #         transport_dst_end, transport_ctrl_begin, transport_ctrl_end, _ = df_acl.iloc[i]
+        #     src_ip_start =
+        #     y = Int('')
 
     def populate_policies(self, node, rule_list):
         if node.isLeaf:
@@ -180,7 +195,10 @@ class AntEater:
             for rid, rt in self.router_list.items():
                 if rid != t and rt.policies is not None:
                     for policy in rt.policies:
-                        dp[rid][i] = Or(dp[rid][i], And(policy[0], dp[policy[1]][i-1]))
+                        ored_dst_rules = False
+                        for fid in policy[1]:
+                            ored_dst_rules = Or(ored_dst_rules, dp[fid][i-1])
+                        dp[rid][i] = Or(dp[rid][i], And(policy[0], ored_dst_rules))
         final_rule = dp[s][1]
         for i in range(2, k+1):
             final_rule = Or(final_rule, dp[s][i])
@@ -292,15 +310,30 @@ class TestSuite:
 def main():
     argparser = argparse.ArgumentParser()
     argparser.add_argument('-f', '--router_file', help="Router List File", action='store', required=True)
-    argparser.add_argument('-a', '--acl_file', help="ACL Rule File", action='store', required=True)
+    argparser.add_argument('-a', '--acl_folder', help="ACL Rules Folder", action='store', required=True)
+    argparser.add_argument('-p', '--topology_file', help="Topology File", action='store', required=True)
+    argparser.add_argument('-m', '--id_map', help="Router ID Map File", action='store', required=True)
     argparser.add_argument('-t', '--test_id', help="1: reachability 2: loop 3: packet loss", action='store', required=True)
     argparser.add_argument('-n', '--draw_network', help="Network display toggle", action='store_true')
     args = argparser.parse_args()
-    print("Reading network flow file . . .")
-    df_route = pd.read_csv(args.router_file)
-    df_acl = pd.read_csv(args.acl_file)
 
-    router_list, rule_list = Utils.parse_input_data(df_route, df_acl, args.draw_network)
+    print("Reading network flow files . . .")
+    df_route = pd.read_csv(args.router_file)
+    acl_dfs = {}
+    for file in os.listdir(args.acl_folder):
+        if file.startswith("acl_") and file.endswith(".csv"):
+            df_acl = pd.read_csv(file)
+            rtr_name = str(file.split("_")[1]) + "_rtr"
+            acl_dfs[rtr_name] = df_acl
+
+    df_topo = pd.read_csv(args.topology_file)
+
+    df_id_map = pd.read_csv(args.id_map)
+    id_map = {}
+    for i in range(len(df_id_map)):
+        id_map[df_id_map.iloc[i, 1]] = int(df_id_map.iloc[i, 0])
+
+    router_list, rule_list = Utils.parse_input_data(df_route, acl_dfs, df_topo, id_map, args.draw_network)
     anteater = AntEater(router_list, rule_list)
 
     print("-----------------------------")
