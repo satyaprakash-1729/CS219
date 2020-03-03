@@ -1,7 +1,9 @@
 ## CS219: System Modelling Anteater with Z3
 
 1. To install required packages run "pip3 install -r requirements.txt"
-2. To run the program, python3 main.py -f routers.csv -t 1 -n 
+2. To run the program, 
+	- python3 parser.py
+	- python3 main.py -f routers_created.csv -a stanford_backbone_cons/ -p stanford_backbone_cons/topology.csv -m stanford_backbone_cons/\_router\_id\_map.csv -t 1
 	1. f --> file name for routers
 	2. t --> 1 means reachability 2 --> loops
 	3. n --> verbose - graph draw
