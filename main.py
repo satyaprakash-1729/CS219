@@ -110,9 +110,9 @@ class Utils:
             for i in range(len(df_topology)):
                 src = int(df_topology.iloc[i, 0])
                 dst = int(df_topology.iloc[i, 2])
-                if src not in router_list:
+                if src not in router_list1:
                     router_list1.append(src)
-                if dst not in router_list:
+                if dst not in router_list1:
                     router_list1.append(dst)
                 edge_list.append((src, dst))
 
@@ -129,7 +129,8 @@ class Utils:
             nx.draw_networkx_nodes(graph, pos, router_list1)
             nx.draw_networkx_edges(graph, pos, edge_list, arrowstyle="->", arrowsize=20, width=2)
             nx.draw_networkx_labels(graph, pos, label_nodes)
-            plt.savefig("fig.png")
+            plt.show()
+            # plt.savefig("fig.png")
 
         return router_list, rule_list
 
@@ -140,7 +141,7 @@ class Router:
         self.rule_book = BinaryTrie()
         self.done_adding = False
         self.policies = None
-        self.acl_policies = None
+        self.acl_rule = False
 
     def add_rule(self, rule):
         self.rule_book.add_prefix(rule, prefix=rule.prefix)
@@ -151,15 +152,30 @@ class Router:
         self.done_adding = True
 
     def parse_acl_policies(self, df_acl):
-        #TO IMPLEMENT
-        pass
-        # for i in range(len(df_acl)):
-        #     _, action, src_ip, src_ip_mask, dst_ip, dst_ip_mask,\
-        #         _, transport_src_begin, transport_src_end, transport_dst_begin,\
-        #         transport_dst_end, transport_ctrl_begin, transport_ctrl_end, _ = df_acl.iloc[i]
-        #     src_ip_start = src_ip // src_ip_mask
-        #     src_ip_end = src_ip_start + src_ip_mask
-        #     y = Int('')
+        expr = False
+        allows = False
+        denies = True
+        y = Int('src')
+        x = Int('dst')
+        z = Int('src_port')
+        a = Int('dst_port')
+        for i in range(len(df_acl)):
+            _, action, src_ip, src_ip_mask, dst_ip, dst_ip_mask,\
+                _, port_src_begin, port_src_end, port_dst_begin,\
+                port_dst_end, transport_ctrl_begin, transport_ctrl_end, _ = df_acl.iloc[i]
+            src_ip_start = (src_ip // (src_ip_mask+1))*(src_ip_mask+1)
+            src_ip_end = src_ip_start + src_ip_mask
+            dst_ip_start = (dst_ip // (dst_ip_mask+1))*(dst_ip_mask+1)
+            dst_ip_end = dst_ip_start + dst_ip_mask
+            expr = And(Not(expr), And(y >= int(src_ip_start), y <= int(src_ip_end),
+                                      x >= int(dst_ip_start), x <= int(dst_ip_end),
+                                      z >= int(port_src_begin), z <= int(port_src_end),
+                                      a >= int(port_dst_begin), a <= int(port_dst_end)))
+            if action:
+                allows = Or(allows, expr)
+            else:
+                denies = And(denies, Not(expr))
+        self.acl_rule = And(allows, denies)
 
     def populate_policies(self, node, rule_list):
         if node.isLeaf:
@@ -193,7 +209,7 @@ class AntEater:
 
     def check_reachability(self, s, t, k):
         dp = [[False for i in range(k+1)] for j in range(len(self.router_list.keys())+1)]
-        dp[t][0] = True
+        dp[t][0] = self.router_list[t].acl_rule
         for i in range(1, k+1):
             for rid, rt in self.router_list.items():
                 if rid != t and rt.policies is not None:
@@ -201,7 +217,7 @@ class AntEater:
                         ored_dst_rules = False
                         for fid in policy[1]:
                             ored_dst_rules = Or(ored_dst_rules, dp[fid][i-1])
-                        dp[rid][i] = Or(dp[rid][i], And(policy[0], ored_dst_rules))
+                        dp[rid][i] = Or(dp[rid][i], And(And(policy[0], self.router_list[rid].acl_rule), ored_dst_rules))
         final_rule = dp[s][1]
         for i in range(2, k+1):
             final_rule = Or(final_rule, dp[s][i])
@@ -269,7 +285,10 @@ class TestSuite:
         if solver.check().r != -1:
             m = solver.model()
             for var in m.decls():
-                print(">>>> IP: ", Utils.convert_int_to_ip(m[var].as_long()))
+                if var.name() == "src" or var.name() == "dst":
+                    print(">>>> " + var.name() + ": ", Utils.convert_int_to_ip(m[var].as_long()))
+                else:
+                    print(">>>> " + var.name() + ": ", m[var])
         else:
             print("No Solution...")
 
@@ -284,7 +303,10 @@ class TestSuite:
             print("Loop found!...")
             m = solver.model()
             for var in m.decls():
-                print(">>>> IP: ", Utils.convert_int_to_ip(m[var].as_long()))
+                if var.name() == "src" or var.name() == "dst":
+                    print(">>>> " + var.name() + ": ", Utils.convert_int_to_ip(m[var].as_long()))
+                else:
+                    print(">>>> " + var.name() + ": ", m[var])
             return
         print("No Loops Found !")
 
