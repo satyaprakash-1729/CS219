@@ -151,6 +151,7 @@ class Router:
 
     def parse_acl_policies(self, df_acl):
         #TO IMPLEMENT
+        pass
         # for i in range(len(df_acl)):
         #     _, action, src_ip, src_ip_mask, dst_ip, dst_ip_mask,\
         #         _, transport_src_begin, transport_src_end, transport_dst_begin,\
@@ -322,7 +323,7 @@ def main():
     acl_dfs = {}
     for file in os.listdir(args.acl_folder):
         if file.startswith("acl_") and file.endswith(".csv"):
-            df_acl = pd.read_csv(file)
+            df_acl = pd.read_csv(args.acl_folder + file)
             rtr_name = str(file.split("_")[1]) + "_rtr"
             acl_dfs[rtr_name] = df_acl
 
