@@ -125,7 +125,7 @@ class Utils:
                 label_nodes[k] = k
             for src, dst in edge_list:
                 graph.add_edge(src, dst, length=10)
-            pos = nx.spring_layout(graph)
+            pos = nx.spring_layout(graph, k=50)
             nx.draw_networkx_nodes(graph, pos, router_list1)
             nx.draw_networkx_edges(graph, pos, edge_list, arrowstyle="->", arrowsize=20, width=2)
             nx.draw_networkx_labels(graph, pos, label_nodes)
@@ -152,9 +152,8 @@ class Router:
         self.done_adding = True
 
     def parse_acl_policies(self, df_acl):
-        expr = False
         allows = False
-        denies = True
+        denies = False
         y = Int('src')
         x = Int('dst')
         z = Int('src_port')
@@ -167,15 +166,15 @@ class Router:
             src_ip_end = src_ip_start + src_ip_mask
             dst_ip_start = (dst_ip // (dst_ip_mask+1))*(dst_ip_mask+1)
             dst_ip_end = dst_ip_start + dst_ip_mask
-            expr = And(Not(expr), And(y >= int(src_ip_start), y <= int(src_ip_end),
-                                      x >= int(dst_ip_start), x <= int(dst_ip_end),
-                                      z >= int(port_src_begin), z <= int(port_src_end),
-                                      a >= int(port_dst_begin), a <= int(port_dst_end)))
+            expr = And(y >= int(src_ip_start), y <= int(src_ip_end),
+                        x >= int(dst_ip_start), x <= int(dst_ip_end),
+                        z >= int(port_src_begin), z <= int(port_src_end),
+                        a >= int(port_dst_begin), a <= int(port_dst_end))
             if action:
-                allows = Or(allows, expr)
+                allows = Or(allows, And(expr, Not(denies)))
             else:
-                denies = And(denies, Not(expr))
-        self.acl_rule = And(allows, denies)
+                denies = Or(denies, expr)
+        self.acl_rule = And(allows, y >= 0, y < 2**32, z >= 0, z < 65536, a >= 0, a < 65536)
 
     def populate_policies(self, node, rule_list):
         if node.isLeaf:
@@ -199,7 +198,10 @@ class Router:
             parsed = Utils.convert_prefix_to_boolean_expr(x, rule.prefix)
             for neg in negations:
                 parsed = And(parsed, Not(Utils.convert_prefix_to_boolean_expr(x, rule_list[neg].prefix)))
-            self.policies[i] = (parsed, rule.forwarded_to)
+            self.policies[i] = (And(parsed, Int('dst') >= 0, Int('dst') < 2**32, Int('src') >= 0, Int('src') < 2**32,
+                                    Int('src_port') >= 0, Int('src_port') < 65536,
+                                    Int('dst_port') >= 0, Int('dst_port') < 65536),
+                                rule.forwarded_to)
 
 
 class AntEater:
@@ -217,34 +219,32 @@ class AntEater:
                         ored_dst_rules = False
                         for fid in policy[1]:
                             ored_dst_rules = Or(ored_dst_rules, dp[fid][i-1])
-                        dp[rid][i] = Or(dp[rid][i], And(And(policy[0], self.router_list[rid].acl_rule), ored_dst_rules))
+                        dp[rid][i] = Or(dp[rid][i], And(policy[0], self.router_list[rid].acl_rule, ored_dst_rules))
         final_rule = dp[s][1]
         for i in range(2, k+1):
             final_rule = Or(final_rule, dp[s][i])
-        final_rule = And(final_rule, Int('dst') > 0)
-        final_rule = And(final_rule, Int('dst') < 2 ** 32)
         return final_rule
 
     def loop_detection(self):
-        final_rule = False
+        final_rules = {}
         for vertex in self.router_list.keys():
             max_router_id = max(self.router_list.keys())
             new_router_id = max_router_id+1
             self.router_list[new_router_id] = Router(new_router_id)
+            self.router_list[new_router_id].acl_rule = self.router_list[vertex].acl_rule
+            self.router_list[new_router_id].policies = self.router_list[vertex].policies
             added_list = []
             for rid, router in self.router_list.items():
                 if router.policies is not None:
-                    for policy, fid in router.policies:
-                        if fid == vertex:
-                            router.policies.append((policy, new_router_id))
+                    for policy, fids in router.policies:
+                        if vertex in fids:
+                            router.policies.append((policy, [new_router_id]))
                             added_list.append(router.policies)
-            final_rule = Or(final_rule, self.check_reachability(vertex, new_router_id, len(self.router_list.keys())-1))
+            final_rules[vertex] = self.check_reachability(vertex, new_router_id, len(self.router_list.keys()))
             del self.router_list[new_router_id]
             for added in added_list:
                 added.pop()
-        final_rule = And(final_rule, Int('dst') > 0)
-        final_rule = And(final_rule, Int('dst') < 2 ** 32)
-        return final_rule
+        return final_rules
 
     def packet_loss(self, vertex, destinations):
         routers = self.router_list.keys()
@@ -262,8 +262,6 @@ class AntEater:
         del self.router_list[new_router_id]
         for rid in destinations:
             self.router_list[rid].policies.pop()
-        final_rule = And(final_rule, Int('dst') > 0)
-        final_rule = And(final_rule, Int('dst') < 2**32)
         return final_rule
 
 
@@ -294,21 +292,22 @@ class TestSuite:
 
     @staticmethod
     def test_loops(anteater):
-        expr = anteater.loop_detection()
-        print("\n\nThe final SAT Expression for loops: ", expr)
-        print("\n--------------------------------\n")
-        solver = Solver()
-        solver.add(expr)
-        if solver.check().r != -1:
-            print("Loop found!...")
-            m = solver.model()
-            for var in m.decls():
-                if var.name() == "src" or var.name() == "dst":
-                    print(">>>> " + var.name() + ": ", Utils.convert_int_to_ip(m[var].as_long()))
-                else:
-                    print(">>>> " + var.name() + ": ", m[var])
-            return
-        print("No Loops Found !")
+        expr_list = anteater.loop_detection()
+        print("\n\nThe final SAT Expressions for loops: ", expr_list)
+        for vertex, expr in expr_list.items():
+            print("\n--------------------------------\n")
+            solver = Solver()
+            solver.add(expr)
+            if solver.check().r != -1:
+                print("Loop found!... for vertex:", vertex)
+                m = solver.model()
+                for var in m.decls():
+                    if var.name() == "src" or var.name() == "dst":
+                        print(">>>> " + var.name() + ": ", Utils.convert_int_to_ip(m[var].as_long()))
+                    else:
+                        print(">>>> " + var.name() + ": ", m[var])
+                return
+            print("No Loop Found For vertex ", vertex)
 
     @staticmethod
     def test_packet_loss(anteater):
