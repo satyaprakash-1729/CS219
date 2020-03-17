@@ -67,19 +67,22 @@ class Utils:
         return str(first) + "." + str(second) + "." + str(third) + "." + str(fourth)
 
     @staticmethod
-    def parse_input_data(df_route, acl_dfs, df_topology, id_map, verbose=False):
+    def parse_input_data(df_route, acl_dfs, df_topology, id_map, simple, verbose=False):
         router_list = {}
         router_temp_list = {}
         rule_list = []
         rule_number = 0
+        cidr_list = {}
         print("Parsing Forwarding Rules....")
         for i in tqdm(range(len(df_route))):
-            rid = df_route.iloc[i, 0]
+            rid = int(df_route.iloc[i, 0])
             cidr = df_route.iloc[i, 1]
             if "|" in df_route.iloc[i, 2]:
                 fids = list(map(int, df_route.iloc[i, 2].split("|")))
             else:
                 fids = [int(df_route.iloc[i, 2])]
+            if simple:
+                cidr_list[(rid, fids[0])] = cidr
             prefix = Utils.get_prefix_with_mask(cidr)
             if rid not in router_list:
                 router_list[rid] = Router(rid)
@@ -99,22 +102,28 @@ class Utils:
             router_list[rid].populate_policies(router_list[rid].rule_book, rule_list)
             router_list[rid].parse_policies(rule_list)
 
-        print("Parsing ACL Rules...")
-        for rtr_name, df_acl in tqdm(acl_dfs.items()):
-            rid = id_map[rtr_name]
-            router_list[rid].parse_acl_policies(df_acl)
+        if acl_dfs is not None:
+            print("Parsing ACL Rules...")
+            for rtr_name, df_acl in tqdm(acl_dfs.items()):
+                rid = id_map[rtr_name]
+                router_list[rid].parse_acl_policies(df_acl)
 
         if verbose:
             router_list1 = []
             edge_list = []
-            for i in range(len(df_topology)):
-                src = int(df_topology.iloc[i, 0])
-                dst = int(df_topology.iloc[i, 2])
-                if src not in router_list1:
-                    router_list1.append(src)
-                if dst not in router_list1:
-                    router_list1.append(dst)
-                edge_list.append((src, dst))
+            if not simple:
+                for i in range(len(df_topology)):
+                    src = int(df_topology.iloc[i, 0])
+                    dst = int(df_topology.iloc[i, 2])
+                    if src not in router_list1:
+                        router_list1.append(src)
+                    if dst not in router_list1:
+                        router_list1.append(dst)
+                    edge_list.append((src, dst))
+            else:
+                router_list1 = router_list.keys()
+                for index, row in df_route.iterrows():
+                    edge_list.append((int(row.ID), int(row.fwd_to)))
 
             print(">>> Number of routers: ", len(router_list1))
             graph = nx.DiGraph()
@@ -125,12 +134,16 @@ class Utils:
                 label_nodes[k] = k
             for src, dst in edge_list:
                 graph.add_edge(src, dst, length=10)
-            pos = nx.spring_layout(graph, k=50)
+            if not simple:
+                pos = nx.spring_layout(graph, k=50)
+            else:
+                pos = nx.spring_layout(graph, k=2)
             nx.draw_networkx_nodes(graph, pos, router_list1)
             nx.draw_networkx_edges(graph, pos, edge_list, arrowstyle="->", arrowsize=20, width=2)
             nx.draw_networkx_labels(graph, pos, label_nodes)
+            if simple:
+                nx.draw_networkx_edge_labels(graph, pos, cidr_list, font_size=12, alpha=0.7)
             plt.show()
-            # plt.savefig("fig.png")
 
         return router_list, rule_list
 
@@ -141,7 +154,7 @@ class Router:
         self.rule_book = BinaryTrie()
         self.done_adding = False
         self.policies = None
-        self.acl_rule = False
+        self.acl_rule = True
 
     def add_rule(self, rule):
         self.rule_book.add_prefix(rule, prefix=rule.prefix)
@@ -210,7 +223,7 @@ class AntEater:
         self.rule_list = rule_list
 
     def check_reachability(self, s, t, k):
-        dp = [[False for i in range(k+1)] for j in range(len(self.router_list.keys())+1)]
+        dp = [[False for _ in range(k+1)] for _ in range(len(self.router_list.keys())+1)]
         dp[t][0] = self.router_list[t].acl_rule
         for i in range(1, k+1):
             for rid, rt in self.router_list.items():
@@ -255,10 +268,13 @@ class AntEater:
         for rid in destinations:
             router = self.router_list[rid]
             if router.policies is not None:
-                router.policies.append((True, new_router_id))
+                router.policies.append((True, [new_router_id]))
             else:
-                router.policies = [(True, new_router_id)]
-        final_rule = Not(self.check_reachability(vertex, new_router_id, num_routers))
+                router.policies = [(True, [new_router_id])]
+        final_rule = And(Int('dst') >= 0, Int('dst') < 2**32, Int('src') >= 0, Int('src') < 2**32,
+                                    Int('src_port') >= 0, Int('src_port') < 65536,
+                                    Int('dst_port') >= 0, Int('dst_port') < 65536,
+                         Not(self.check_reachability(vertex, new_router_id, num_routers)))
         del self.router_list[new_router_id]
         for rid in destinations:
             self.router_list[rid].policies.pop()
@@ -306,7 +322,6 @@ class TestSuite:
                         print(">>>> " + var.name() + ": ", Utils.convert_int_to_ip(m[var].as_long()))
                     else:
                         print(">>>> " + var.name() + ": ", m[var])
-                return
             print("No Loop Found For vertex ", vertex)
 
     @staticmethod
@@ -323,42 +338,53 @@ class TestSuite:
         solver = Solver()
         solver.add(expr)
         if solver.check().r != -1:
-            print("Packet Loss Detected!...\nFollowing header is for one of the lost packets->")
+            print("Packet Loss Detected!")
             m = solver.model()
             for var in m.decls():
-                print(">>>> IP: ", Utils.convert_int_to_ip(m[var].as_long()))
-            return
-        print("No Packet Loss!")
+                if var.name() == "src" or var.name() == "dst":
+                    print(">>>> " + var.name() + ": ", Utils.convert_int_to_ip(m[var].as_long()))
+                else:
+                    print(">>>> " + var.name() + ": ", m[var])
+        else:
+            print("No Packet Loss!")
 
 
 def main():
     argparser = argparse.ArgumentParser()
     argparser.add_argument('-f', '--router_file', help="Router List File", action='store', required=True)
-    argparser.add_argument('-a', '--acl_folder', help="ACL Rules Folder", action='store', required=True)
-    argparser.add_argument('-p', '--topology_file', help="Topology File", action='store', required=True)
-    argparser.add_argument('-m', '--id_map', help="Router ID Map File", action='store', required=True)
+    argparser.add_argument('-s', '--simple', help="Is it a simple network", action='store_true', required=True)
+    argparser.add_argument('-a', '--acl_folder', help="ACL Rules Folder", action='store')
+    argparser.add_argument('-p', '--topology_file', help="Topology File", action='store')
+    argparser.add_argument('-m', '--id_map', help="Router ID Map File", action='store')
     argparser.add_argument('-t', '--test_id', help="1: reachability 2: loop 3: packet loss", action='store', required=True)
     argparser.add_argument('-n', '--draw_network', help="Network display toggle", action='store_true')
     args = argparser.parse_args()
 
-    print("Reading network flow files . . .")
-    df_route = pd.read_csv(args.router_file)
-    acl_dfs = {}
-    for file in os.listdir(args.acl_folder):
-        if file.startswith("acl_") and file.endswith(".csv"):
-            df_acl = pd.read_csv(args.acl_folder + file)
-            rtr_name = str(file.split("_")[1]) + "_rtr"
-            acl_dfs[rtr_name] = df_acl
+    if not args.simple:
+        print("Reading network flow files . . .")
+        df_route = pd.read_csv(args.router_file)
+        acl_dfs = {}
+        for file in os.listdir(args.acl_folder):
+            if file.startswith("acl_") and file.endswith(".csv"):
+                df_acl = pd.read_csv(args.acl_folder + file)
+                rtr_name = str(file.split("_")[1]) + "_rtr"
+                acl_dfs[rtr_name] = df_acl
 
-    df_topo = pd.read_csv(args.topology_file, header=None)
+        df_topo = pd.read_csv(args.topology_file, header=None)
 
-    df_id_map = pd.read_csv(args.id_map, header=None)
-    id_map = {}
-    for i in range(len(df_id_map)):
-        id_map[df_id_map.iloc[i, 1]] = int(df_id_map.iloc[i, 0])
+        df_id_map = pd.read_csv(args.id_map, header=None)
+        id_map = {}
+        for i in range(len(df_id_map)):
+            id_map[df_id_map.iloc[i, 1]] = int(df_id_map.iloc[i, 0])
 
-    router_list, rule_list = Utils.parse_input_data(df_route, acl_dfs, df_topo, id_map, args.draw_network)
-    anteater = AntEater(router_list, rule_list)
+        router_list, rule_list = Utils.parse_input_data(df_route, acl_dfs, df_topo, id_map, args.simple, args.draw_network)
+        anteater = AntEater(router_list, rule_list)
+    else:
+        df_route = pd.read_csv(args.router_file)
+        df_route["ID"] = df_route["ID"].astype(str)
+        df_route["fwd_to"] = df_route["fwd_to"].astype(str)
+        router_list, rule_list = Utils.parse_input_data(df_route, None, None, None, args.simple, args.draw_network)
+        anteater = AntEater(router_list, rule_list)
 
     print("-----------------------------")
     if int(args.test_id) == 1:
