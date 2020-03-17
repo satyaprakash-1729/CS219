@@ -3,6 +3,7 @@ import CiscoParser
 import pandas as pd
 from tqdm import tqdm
 from main import Utils
+import time
 
 output_path = "stanford_backbone_cons/"
 rtr_names = [("bbra_rtr",0),
@@ -157,6 +158,8 @@ class Parser:
         df.to_csv("routers_created.csv", sep=",", index=False)
 
 
+start = time.time()
 parser = Parser()
 parser.parse_all_files()
 parser.write_rules_to_file()
+print("Time taken to parse: ", time.time()-start)

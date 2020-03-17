@@ -4,7 +4,7 @@ import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-
+import time
 
 class BinaryTrie:
     def __init__(self):
@@ -102,7 +102,7 @@ class Utils:
             router_list[rid].populate_policies(router_list[rid].rule_book, rule_list)
             router_list[rid].parse_policies(rule_list)
 
-        if acl_dfs is not None:
+        if not simple:
             print("Parsing ACL Rules...")
             for rtr_name, df_acl in tqdm(acl_dfs.items()):
                 rid = id_map[rtr_name]
@@ -187,7 +187,7 @@ class Router:
                 allows = Or(allows, And(expr, Not(denies)))
             else:
                 denies = Or(denies, expr)
-        self.acl_rule = And(allows, y >= 0, y < 2**32, z >= 0, z < 65536, a >= 0, a < 65536)
+        self.acl_rule = And(allows, x >= 0, x < 2**32, y >= 0, y < 2**32, z >= 0, z < 65536, a >= 0, a < 65536)
 
     def populate_policies(self, node, rule_list):
         if node.isLeaf:
@@ -211,7 +211,7 @@ class Router:
             parsed = Utils.convert_prefix_to_boolean_expr(x, rule.prefix)
             for neg in negations:
                 parsed = And(parsed, Not(Utils.convert_prefix_to_boolean_expr(x, rule_list[neg].prefix)))
-            self.policies[i] = (And(parsed, Int('dst') >= 0, Int('dst') < 2**32, Int('src') >= 0, Int('src') < 2**32,
+            self.policies[i] = (And(parsed, x >= 0, x < 2**32, Int('src') >= 0, Int('src') < 2**32,
                                     Int('src_port') >= 0, Int('src_port') < 65536,
                                     Int('dst_port') >= 0, Int('dst_port') < 65536),
                                 rule.forwarded_to)
@@ -352,7 +352,7 @@ class TestSuite:
 def main():
     argparser = argparse.ArgumentParser()
     argparser.add_argument('-f', '--router_file', help="Router List File", action='store', required=True)
-    argparser.add_argument('-s', '--simple', help="Is it a simple network", action='store_true', required=True)
+    argparser.add_argument('-s', '--simple', help="Is it a simple network", action='store_true')
     argparser.add_argument('-a', '--acl_folder', help="ACL Rules Folder", action='store')
     argparser.add_argument('-p', '--topology_file', help="Topology File", action='store')
     argparser.add_argument('-m', '--id_map', help="Router ID Map File", action='store')
@@ -389,13 +389,19 @@ def main():
     print("-----------------------------")
     if int(args.test_id) == 1:
         print("\n\nReachability Test . . . . ")
+        start = time.time()
         TestSuite.test_reachability(anteater)
+        print("Time to run reachability test: ", time.time()-start, " Seconds")
     elif int(args.test_id) == 2:
         print("\n\nLoops Test . . . .")
+        start = time.time()
         TestSuite.test_loops(anteater)
+        print("Time to run loop test: ", time.time()-start, " Seconds")
     elif int(args.test_id) == 3:
         print("\n\nPacket Loss Test . . . .")
+        start = time.time()
         TestSuite.test_packet_loss(anteater)
+        print("Time to run packet loss test: ", time.time()-start, " Seconds")
     else:
         print("Please choose a correct Test ID\n1 --> Reachability\n2 --> Loop Detection\n3 --> Packet Loss Detection")
 
