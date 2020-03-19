@@ -360,18 +360,19 @@ def main():
     argparser.add_argument('-n', '--draw_network', help="Network display toggle", action='store_true')
     args = argparser.parse_args()
 
+    print("Reading network flow files . . .")
+    df_route = pd.read_csv(args.router_file)
+    df_route["ID"] = df_route["ID"].astype(str)
+    df_route["fwd_to"] = df_route["fwd_to"].astype(str)
+
     if not args.simple:
-        print("Reading network flow files . . .")
-        df_route = pd.read_csv(args.router_file)
         acl_dfs = {}
         for file in os.listdir(args.acl_folder):
             if file.startswith("acl_") and file.endswith(".csv"):
                 df_acl = pd.read_csv(args.acl_folder + file)
                 rtr_name = str(file.split("_")[1]) + "_rtr"
                 acl_dfs[rtr_name] = df_acl
-
         df_topo = pd.read_csv(args.topology_file, header=None)
-
         df_id_map = pd.read_csv(args.id_map, header=None)
         id_map = {}
         for i in range(len(df_id_map)):
@@ -380,9 +381,6 @@ def main():
         router_list, rule_list = Utils.parse_input_data(df_route, acl_dfs, df_topo, id_map, args.simple, args.draw_network)
         anteater = AntEater(router_list, rule_list)
     else:
-        df_route = pd.read_csv(args.router_file)
-        df_route["ID"] = df_route["ID"].astype(str)
-        df_route["fwd_to"] = df_route["fwd_to"].astype(str)
         router_list, rule_list = Utils.parse_input_data(df_route, None, None, None, args.simple, args.draw_network)
         anteater = AntEater(router_list, rule_list)
 

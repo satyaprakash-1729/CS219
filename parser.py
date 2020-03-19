@@ -89,7 +89,14 @@ class Parser:
             self.cs_list[rtr_name] = cs
 
         for (from_router, from_port, to_router, to_port) in topology:
-            self.topology_data[(from_router, from_port)] = (to_router, to_port)
+            if (from_router, from_port) not in self.topology_data:
+                self.topology_data[(from_router, from_port)] = [(to_router, to_port)]
+            else:
+                self.topology_data[(from_router, from_port)].append((to_router, to_port))
+            if (to_router, to_port) not in self.topology_data:
+                self.topology_data[(to_router, to_port)] = [(from_router, from_port)]
+            else:
+                self.topology_data[(from_router, from_port)].append((to_router, to_port))
 
         for rtr in self.cs_list.keys():
             cs = self.cs_list[rtr]
@@ -135,18 +142,21 @@ class Parser:
             port = row["port"].split(".")[0]
             cs = self.cs_list[rtr]
             if (rtr, port) in self.topology_data:
-                to_rtr, to_port = self.topology_data[(rtr, port)]
-                self.forwarding_rules.append([rtr_id, ip+"/"+str(mask), str(self.cs_list[to_rtr].get_switch_id())])
+                all_maps = self.topology_data[(rtr, port)]
+                next_hops = []
+                for to_rtr, _ in all_maps:
+                    next_hops.append(str(self.cs_list[to_rtr].get_switch_id()))
+                self.forwarding_rules.append([str(rtr_id), ip+"/"+str(mask), "|".join(next_hops)])
             elif port.startswith("vlan"):
                 ports_spanned = cs.vlan_span_ports[port]
                 switch_ids = []
                 for port_to_send in ports_spanned:
                     if (rtr, port_to_send) in self.topology_data:
-                        to_rtr, to_port = self.topology_data[(rtr, port_to_send)]
-                        switch_id = self.cs_list[to_rtr].get_switch_id()
-                        switch_ids.append(str(switch_id))
+                        all_maps = self.topology_data[(rtr, port_to_send)]
+                        for to_rtr, _ in all_maps:
+                            switch_ids.append(str(self.cs_list[to_rtr].get_switch_id()))
                 if len(switch_ids) > 0:
-                    self.forwarding_rules.append([rtr_id, ip+"/"+str(mask), "|".join(switch_ids)])
+                    self.forwarding_rules.append([str(rtr_id), ip+"/"+str(mask), "|".join(switch_ids)])
 
     def convert_to_custom_format(self):
         for rtr in self.cs_list.keys():
@@ -155,6 +165,7 @@ class Parser:
 
     def write_rules_to_file(self):
         df = pd.DataFrame(self.forwarding_rules, columns=["ID", "prefix", "fwd_to"])
+        df["fwd_to"].astype(str)
         df.to_csv("routers_created.csv", sep=",", index=False)
 
 
